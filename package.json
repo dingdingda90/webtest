@@ -1,0 +1,9 @@
+{
+  "name": "starisle-fullstack-app",
+  "private": true,
+  "scripts": {
+    "postinstall": "python3 -m venv backend/.venv && backend/.venv/bin/pip install -r backend/requirements.txt && npm --prefix frontend install",
+    "dev": "node scripts/start-dev.mjs",
+    "check": "npm --prefix frontend run check"
+  }
+}
