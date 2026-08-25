@@ -1,0 +1,11 @@
+.env
+.bash_history
+.chat.json
+.lingo_rollback_history.json
+.meta.json
+node_modules/
+.venv/
+dist/
+build/
+core
+!core/
