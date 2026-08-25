@@ -3,11 +3,11 @@
   "projectType": "fullstack",
   "name": "web",
   "role": "frontend",
-  "cwd": "frontend",
+  "cwd": ".",
   "port": 5173,
-  "startCommand": "npx vite --port 5173 --host 0.0.0.0 --strictPort",
+  "applicationInstall": "npm install",
+  "applicationStart": "npm run dev",
   "preview": true,
-  "installCommand": "npm install",
   "services": [
     {
       "name": "web",
