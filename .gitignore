@@ -9,3 +9,5 @@ dist/
 build/
 core
 !core/
+.claude/
+.mcp.json
