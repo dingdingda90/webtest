@@ -1,19 +1,17 @@
-"""星屿智联科技 —— 公司主页后端（FastAPI）。
+"""星屿智联科技 —— 公司主页后端（FastAPI + SQLite）。
 
-提供三类能力：
-1. 公司主页/管理后台所需的登录鉴权接口（/api/auth/*）
-2. 管理后台用于定制 ESP32 反馈内容的配置接口（/api/admin/*）
-3. 供 ESP32 设备直接轮询的 JSON 接口（/api/esp32/*），含实时天气
-
-⚠️ 数据性质说明：当前环境未启用 Supabase/数据库连接。
-登录使用内置演示账号，token 与 ESP32 定制配置保存在进程内存中，
-属于「临时本地状态」，服务重启后会重置，并非真实持久化。
+提供四类能力：
+1. 登录鉴权接口（/api/auth/*）—— 基于 SQLite 用户表
+2. ESP32 配置管理（/api/admin/*）—— 持久化到 SQLite
+3. ESP32 设备轮询接口（/api/esp32/*）—— 含实时天气
+4. 通用天气查询接口（/api/weather/city）—— 独立于 ESP32
 """
 
 from __future__ import annotations
 
 import secrets
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional
 
@@ -21,37 +19,37 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="星屿智联科技 API", version="1.0.0")
+from database import (
+    init_db,
+    db_get_user,
+    verify_password,
+    db_get_config,
+    db_update_config,
+    db_log_weather,
+    db_get_weather_logs,
+)
 
 CST = timezone(timedelta(hours=8))
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_db()
+    yield
+
+
+app = FastAPI(title="星屿智联科技 API", version="2.0.0", lifespan=lifespan)
+
 # ---------------------------------------------------------------------------
-# 临时内存状态（演示用，非持久化）
+# 内存状态（仅 token 会话保留在内存中）
 # ---------------------------------------------------------------------------
 
-# 内置演示账号：仅用于演示登录流程，重启即重置
-DEMO_USERNAME = "admin"
-DEMO_PASSWORD = "admin123"
-
-# token -> {"username": str, "created_at": float}
+# token -> {"username": str, "role": str, "created_at": float}
 TOKENS: Dict[str, dict] = {}
 
-# ESP32 定制配置（内存临时状态，重启后恢复默认值）
-esp32_config: dict = {
-    "company_name": "星屿智联科技",
-    "marquee_text": "欢迎使用星屿智联 · ESP32 云端智能终端",
-    "city": "上海",
-    "latitude": 31.23,
-    "longitude": 121.47,
-    "refresh_interval_sec": 60,
-    "led_brightness": 80,
-    "display": {"show_weather": True, "show_time": True, "show_message": True},
-    "custom_fields": {
-        "welcome": "Hello ESP32",
-        "firmware_channel": "stable",
-        "office_mode": "normal",
-    },
-}
+# 配置缓存（减少 DB 读取，写入时同步更新）
+_config_cache: dict | None = None
+_config_cache_ts: float = 0.0
 
 # 天气缓存：{"fetched_at": float, "data": dict}
 WEATHER_CACHE_TTL_SEC = 600
@@ -107,18 +105,19 @@ def health() -> dict:
 
 
 @app.post("/api/auth/login")
-def login(payload: LoginPayload) -> dict:
-    if payload.username != DEMO_USERNAME or payload.password != DEMO_PASSWORD:
+async def login(payload: LoginPayload) -> dict:
+    user = await db_get_user(payload.username)
+    if not user or not verify_password(payload.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="用户名或密码错误")
     token = secrets.token_hex(16)
-    TOKENS[token] = {"username": payload.username, "created_at": time.time()}
-    return {"token": token, "user": {"username": payload.username, "role": "admin"}}
+    TOKENS[token] = {"username": user["username"], "role": user["role"], "created_at": time.time()}
+    return {"token": token, "user": {"username": user["username"], "role": user["role"]}}
 
 
 @app.get("/api/auth/me")
 def me(token: str = Depends(require_auth)) -> dict:
     session = TOKENS[token]
-    return {"username": session["username"], "role": "admin"}
+    return {"username": session["username"], "role": session["role"]}
 
 
 @app.post("/api/auth/logout")
@@ -149,16 +148,30 @@ class Esp32ConfigPayload(BaseModel):
     custom_fields: Dict[str, str] = Field(default_factory=dict)
 
 
+async def _get_config() -> dict:
+    """获取配置（带缓存，5秒过期）"""
+    global _config_cache, _config_cache_ts
+    now = time.time()
+    if _config_cache is not None and now - _config_cache_ts < 5:
+        return _config_cache
+    _config_cache = await db_get_config()
+    _config_cache_ts = now
+    return _config_cache
+
+
 @app.get("/api/admin/esp32-config")
-def get_esp32_config(_: str = Depends(require_auth)) -> dict:
-    return esp32_config
+async def get_esp32_config(_: str = Depends(require_auth)) -> dict:
+    return await db_get_config()
 
 
 @app.put("/api/admin/esp32-config")
-def update_esp32_config(payload: Esp32ConfigPayload, _: str = Depends(require_auth)) -> dict:
-    global esp32_config
-    esp32_config = payload.model_dump()
-    return {"status": "ok", "config": esp32_config}
+async def update_esp32_config(payload: Esp32ConfigPayload, _: str = Depends(require_auth)) -> dict:
+    global _config_cache
+    config = payload.model_dump()
+    await db_update_config(config)
+    _config_cache = config
+    _config_cache_ts = time.time()
+    return {"status": "ok", "config": config}
 
 
 # ---------------------------------------------------------------------------
@@ -235,9 +248,10 @@ async def fetch_weather() -> dict:
     if cached and now - _weather_cache.get("fetched_at", 0) < WEATHER_CACHE_TTL_SEC:
         return cached
 
-    lat = esp32_config["latitude"]
-    lon = esp32_config["longitude"]
-    city = esp32_config["city"]
+    cfg = await _get_config()
+    lat = cfg["latitude"]
+    lon = cfg["longitude"]
+    city = cfg["city"]
     try:
         data = await _fetch_weather_by_coords(lat, lon, city)
         _weather_cache["data"] = data
@@ -287,6 +301,7 @@ async def weather_by_city(city: str = None, payload: CityWeatherPayload = None) 
         demo = dict(DEMO_WEATHER)
         demo["city"] = coords["city"]
         demo["updated_at"] = datetime.now(CST).isoformat(timespec="seconds")
+        await db_log_weather(coords["city"], demo)
         return {
             "city": coords["city"],
             "country": coords["country"],
@@ -296,6 +311,7 @@ async def weather_by_city(city: str = None, payload: CityWeatherPayload = None) 
             "note": "实时天气获取失败，返回演示数据",
         }
 
+    await db_log_weather(coords["city"], weather)
     return {
         "city": coords["city"],
         "country": coords["country"],
@@ -316,8 +332,8 @@ async def esp32_weather() -> dict:
 
 
 @app.get("/api/esp32/config")
-def esp32_device_config() -> dict:
-    cfg = esp32_config
+async def esp32_device_config() -> dict:
+    cfg = await _get_config()
     return {
         "device_target": "esp32",
         "refresh_interval_sec": cfg["refresh_interval_sec"],
@@ -330,7 +346,7 @@ def esp32_device_config() -> dict:
 @app.get("/api/esp32/dashboard")
 async def esp32_dashboard() -> dict:
     """ESP32 主轮询接口：一次请求拿到天气、时间、跑马灯与全部定制字段。"""
-    cfg = esp32_config
+    cfg = await _get_config()
     now = datetime.now(CST)
     return {
         "device_target": "esp32",
@@ -345,3 +361,12 @@ async def esp32_dashboard() -> dict:
         "refresh_interval_sec": cfg["refresh_interval_sec"],
         "custom_fields": cfg["custom_fields"],
     }
+
+
+# ---------------------------------------------------------------------------
+# 天气查询日志（管理后台可查看历史记录）
+# ---------------------------------------------------------------------------
+
+@app.get("/api/admin/weather-logs")
+async def get_weather_logs(limit: int = 50, _: str = Depends(require_auth)) -> list[dict]:
+    return await db_get_weather_logs(limit)
