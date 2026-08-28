@@ -259,33 +259,24 @@ class CityWeatherPayload(BaseModel):
 
 
 @app.post("/api/weather/city")
-async def weather_by_city(payload: CityWeatherPayload) -> dict:
+@app.get("/api/weather/city")
+async def weather_by_city(city: str = None, payload: CityWeatherPayload = None) -> dict:
     """
-    通过 POST 发送城市名，返回该城市当前天气。
+    通过 POST 或 GET 查询城市天气。
 
-    示例请求：
+    GET 示例（浏览器直接访问）：
+        /api/weather/city?city=北京
+
+    POST 示例（JSON）：
         POST /api/weather/city
         {"city": "北京"}
-
-    返回：
-        {
-            "city": "北京",
-            "country": "中国",
-            "latitude": 39.9,
-            "longitude": 116.4,
-            "weather": {
-                "temperature": 25.3,
-                "apparent_temperature": 26.1,
-                "humidity": 55,
-                "weather_code": 1,
-                "weather_text": "大部晴朗",
-                "wind_speed": 3.5,
-                "source": "open-meteo",
-                "updated_at": "2026-08-28T12:00:00+08:00"
-            }
-        }
     """
-    city = payload.city.strip()
+    if payload is not None:
+        city = payload.city.strip()
+    elif city is not None:
+        city = city.strip()
+    else:
+        raise HTTPException(status_code=400, detail="请提供 city 参数，例如 /api/weather/city?city=北京")
     coords = await geocode_city(city)
     if not coords:
         raise HTTPException(status_code=404, detail=f"未找到城市「{city}」，请检查城市名称拼写")
