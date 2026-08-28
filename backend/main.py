@@ -162,8 +162,71 @@ def update_esp32_config(payload: Esp32ConfigPayload, _: str = Depends(require_au
 
 
 # ---------------------------------------------------------------------------
-# ESP32 设备接口（无需登录，设备直接轮询）
+# 天气查询（通用，独立于 ESP32）
 # ---------------------------------------------------------------------------
+
+# 城市地理坐标缓存
+CITY_COORDS_CACHE: dict = {}
+CITY_COORDS_CACHE_TTL = 3600  # 1 小时
+
+
+async def geocode_city(city: str) -> Optional[dict]:
+    """通过 Open-Meteo Geocoding API 将城市名转换为经纬度。"""
+    now = time.time()
+    cached = CITY_COORDS_CACHE.get(city)
+    if cached and now - cached.get("fetched_at", 0) < CITY_COORDS_CACHE_TTL:
+        return cached["data"]
+
+    url = (
+        "https://geocoding-api.open-meteo.com/v1/search"
+        f"?name={city}&count=1&language=zh&format=json"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            body = resp.json()
+        results = body.get("results")
+        if not results:
+            return None
+        r = results[0]
+        data = {
+            "city": r.get("name", city),
+            "country": r.get("country", ""),
+            "latitude": r["latitude"],
+            "longitude": r["longitude"],
+        }
+        CITY_COORDS_CACHE[city] = {"data": data, "fetched_at": now}
+        return data
+    except Exception:
+        return None
+
+
+async def _fetch_weather_by_coords(latitude: float, longitude: float, city_name: str) -> dict:
+    """根据经纬度调用 Open-Meteo 获取实时天气。"""
+    url = (
+        "https://api.open-meteo.com/v1/forecast"
+        f"?latitude={latitude}&longitude={longitude}"
+        "&current=temperature_2m,apparent_temperature,relative_humidity_2m,"
+        "weather_code,wind_speed_10m&timezone=Asia%2FShanghai"
+    )
+    async with httpx.AsyncClient(timeout=6.0) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        current = resp.json()["current"]
+    code = int(current.get("weather_code", -1))
+    return {
+        "temperature": current.get("temperature_2m"),
+        "apparent_temperature": current.get("apparent_temperature"),
+        "humidity": current.get("relative_humidity_2m"),
+        "weather_code": code,
+        "weather_text": WEATHER_CODE_TEXT.get(code, "未知"),
+        "wind_speed": current.get("wind_speed_10m"),
+        "city": city_name,
+        "source": "open-meteo",
+        "updated_at": datetime.now(CST).isoformat(timespec="seconds"),
+    }
+
 
 async def fetch_weather() -> dict:
     """优先实时调用 Open-Meteo 免费天气接口；失败时返回演示数据。"""
@@ -172,37 +235,88 @@ async def fetch_weather() -> dict:
     if cached and now - _weather_cache.get("fetched_at", 0) < WEATHER_CACHE_TTL_SEC:
         return cached
 
-    url = (
-        "https://api.open-meteo.com/v1/forecast"
-        f"?latitude={esp32_config['latitude']}&longitude={esp32_config['longitude']}"
-        "&current=temperature_2m,apparent_temperature,relative_humidity_2m,"
-        "weather_code,wind_speed_10m&timezone=Asia%2FShanghai"
-    )
+    lat = esp32_config["latitude"]
+    lon = esp32_config["longitude"]
+    city = esp32_config["city"]
     try:
-        async with httpx.AsyncClient(timeout=6.0) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            current = resp.json()["current"]
-        code = int(current.get("weather_code", -1))
-        data = {
-            "temperature": current.get("temperature_2m"),
-            "apparent_temperature": current.get("apparent_temperature"),
-            "humidity": current.get("relative_humidity_2m"),
-            "weather_code": code,
-            "weather_text": WEATHER_CODE_TEXT.get(code, "未知"),
-            "wind_speed": current.get("wind_speed_10m"),
-            "city": esp32_config["city"],
-            "source": "open-meteo",
-            "updated_at": datetime.now(CST).isoformat(timespec="seconds"),
-        }
+        data = await _fetch_weather_by_coords(lat, lon, city)
         _weather_cache["data"] = data
         _weather_cache["fetched_at"] = now
         return data
     except Exception:
         demo = dict(DEMO_WEATHER)
-        demo["city"] = esp32_config["city"]
+        demo["city"] = city
         demo["updated_at"] = datetime.now(CST).isoformat(timespec="seconds")
         return demo
+
+
+# ---------------------------------------------------------------------------
+# 通用天气查询接口（独立于 ESP32，其他程序可直接调用）
+# ---------------------------------------------------------------------------
+
+class CityWeatherPayload(BaseModel):
+    city: str = Field(min_length=1, max_length=60, description="城市名称，例如：北京、上海、Tokyo")
+
+
+@app.post("/api/weather/city")
+async def weather_by_city(payload: CityWeatherPayload) -> dict:
+    """
+    通过 POST 发送城市名，返回该城市当前天气。
+
+    示例请求：
+        POST /api/weather/city
+        {"city": "北京"}
+
+    返回：
+        {
+            "city": "北京",
+            "country": "中国",
+            "latitude": 39.9,
+            "longitude": 116.4,
+            "weather": {
+                "temperature": 25.3,
+                "apparent_temperature": 26.1,
+                "humidity": 55,
+                "weather_code": 1,
+                "weather_text": "大部晴朗",
+                "wind_speed": 3.5,
+                "source": "open-meteo",
+                "updated_at": "2026-08-28T12:00:00+08:00"
+            }
+        }
+    """
+    city = payload.city.strip()
+    coords = await geocode_city(city)
+    if not coords:
+        raise HTTPException(status_code=404, detail=f"未找到城市「{city}」，请检查城市名称拼写")
+
+    try:
+        weather = await _fetch_weather_by_coords(coords["latitude"], coords["longitude"], coords["city"])
+    except Exception:
+        demo = dict(DEMO_WEATHER)
+        demo["city"] = coords["city"]
+        demo["updated_at"] = datetime.now(CST).isoformat(timespec="seconds")
+        return {
+            "city": coords["city"],
+            "country": coords["country"],
+            "latitude": coords["latitude"],
+            "longitude": coords["longitude"],
+            "weather": demo,
+            "note": "实时天气获取失败，返回演示数据",
+        }
+
+    return {
+        "city": coords["city"],
+        "country": coords["country"],
+        "latitude": coords["latitude"],
+        "longitude": coords["longitude"],
+        "weather": weather,
+    }
+
+
+# ---------------------------------------------------------------------------
+# ESP32 设备接口（无需登录，设备直接轮询）
+# ---------------------------------------------------------------------------
 
 
 @app.get("/api/esp32/weather")
