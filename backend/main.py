@@ -256,6 +256,7 @@ async def fetch_weather() -> dict:
         data = await _fetch_weather_by_coords(lat, lon, city)
         _weather_cache["data"] = data
         _weather_cache["fetched_at"] = now
+        await db_log_weather(city, data)
         return data
     except Exception:
         demo = dict(DEMO_WEATHER)
