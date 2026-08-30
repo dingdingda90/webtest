@@ -95,3 +95,15 @@ export interface Esp32Dashboard {
   refresh_interval_sec: number
   custom_fields: Record<string, string>
 }
+
+export interface WeatherLog {
+  id: number
+  city: string
+  temperature: number | null
+  humidity: number | null
+  weather_code: number
+  weather_text: string
+  wind_speed: number | null
+  source: string
+  queried_at: string
+}

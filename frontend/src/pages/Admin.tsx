@@ -2,14 +2,15 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, Navigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { apiFetch } from '../lib/api'
-import type { DisplayConfig, Esp32Config, Esp32Dashboard } from '../lib/api'
+import type { DisplayConfig, Esp32Config, Esp32Dashboard, WeatherLog } from '../lib/api'
 
-type TabId = 'config' | 'preview' | 'docs'
+type TabId = 'config' | 'preview' | 'docs' | 'logs'
 
 const tabs: { id: TabId; label: string }[] = [
   { id: 'config', label: 'ESP32 配置' },
   { id: 'preview', label: '设备预览' },
   { id: 'docs', label: 'API 文档' },
+  { id: 'logs', label: '天气日志' },
 ]
 
 interface CustomFieldRow {
@@ -504,7 +505,133 @@ const apiDocs = [
     auth: 'Bearer Token',
     desc: '更新 ESP32 定制配置，保存后设备下次轮询即拿到新内容。',
   },
+  {
+    method: 'GET',
+    path: '/api/admin/weather-logs',
+    auth: 'Bearer Token',
+    desc: '查询天气日志记录，返回最近 N 条查询历史（默认50条）。',
+  },
+  {
+    method: 'GET',
+    path: '/api/weather/city?city=北京',
+    auth: '无需鉴权',
+    desc: '通用天气查询（GET/POST），按城市名获取实时天气，独立于 ESP32。',
+  },
 ]
+
+function WeatherLogsPanel() {
+  const [logs, setLogs] = useState<WeatherLog[]>([])
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+
+  const load = useCallback(() => {
+    setStatus('loading')
+    apiFetch<WeatherLog[]>('/api/admin/weather-logs?limit=100')
+      .then((data) => {
+        setLogs(data)
+        setStatus('ready')
+      })
+      .catch(() => setStatus('error'))
+  }, [])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-slate-600">
+          所有通过网页或 API 查询天气的记录，按时间倒序排列。
+        </p>
+        <button
+          type="button"
+          onClick={load}
+          className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50"
+        >
+          刷新
+        </button>
+      </div>
+
+      {status === 'loading' && <p className="text-sm text-slate-500">正在加载日志…</p>}
+      {status === 'error' && (
+        <p className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+          日志加载失败，请确认后端服务已启动。
+        </p>
+      )}
+      {status === 'ready' && logs.length === 0 && (
+        <p className="rounded-xl bg-slate-50 p-6 text-center text-sm text-slate-400">
+          暂无天气查询记录
+        </p>
+      )}
+      {status === 'ready' && logs.length > 0 && (
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50">
+                  <th className="px-4 py-3 font-semibold text-slate-700">城市</th>
+                  <th className="px-4 py-3 font-semibold text-slate-700">温度</th>
+                  <th className="px-4 py-3 font-semibold text-slate-700">湿度</th>
+                  <th className="px-4 py-3 font-semibold text-slate-700">天气</th>
+                  <th className="px-4 py-3 font-semibold text-slate-700">风速</th>
+                  <th className="px-4 py-3 font-semibold text-slate-700">数据源</th>
+                  <th className="px-4 py-3 font-semibold text-slate-700">查询时间</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {logs.map((log) => (
+                  <tr key={log.id} className="transition-colors hover:bg-slate-50">
+                    <td className="px-4 py-3 font-medium text-slate-900">{log.city}</td>
+                    <td className="px-4 py-3 text-slate-600">
+                      {log.temperature !== null ? `${log.temperature}°C` : '—'}
+                    </td>
+                    <td className="px-4 py-3 text-slate-600">
+                      {log.humidity !== null ? `${log.humidity}%` : '—'}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
+                          log.weather_code === 0
+                            ? 'bg-amber-50 text-amber-700'
+                            : log.weather_code <= 2
+                              ? 'bg-emerald-50 text-emerald-700'
+                              : log.weather_code === 3
+                                ? 'bg-slate-100 text-slate-600'
+                                : log.weather_code >= 95
+                                  ? 'bg-rose-50 text-rose-700'
+                                  : 'bg-sky-50 text-sky-700'
+                        }`}
+                      >
+                        {log.weather_text}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-slate-600">
+                      {log.wind_speed !== null ? `${log.wind_speed} km/h` : '—'}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
+                          log.source === 'open-meteo'
+                            ? 'bg-indigo-50 text-indigo-700'
+                            : 'bg-amber-50 text-amber-700'
+                        }`}
+                      >
+                        {log.source === 'open-meteo' ? '实时' : '演示'}
+                      </span>
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-500">
+                      {log.queried_at.replace('T', ' ')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 function DocsPanel() {
   return (
@@ -623,6 +750,7 @@ export default function Admin() {
         {activeTab === 'config' && <ConfigPanel />}
         {activeTab === 'preview' && <PreviewPanel />}
         {activeTab === 'docs' && <DocsPanel />}
+        {activeTab === 'logs' && <WeatherLogsPanel />}
       </div>
     </main>
   )
