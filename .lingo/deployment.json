@@ -1,31 +1,7 @@
 {
   "schemaVersion": 1,
-  "projectType": "fullstack",
-  "name": "web",
-  "role": "frontend",
-  "cwd": ".",
-  "port": 5173,
-  "applicationInstall": "npm install",
-  "applicationStart": "npm run dev",
-  "applicationStop": "pkill -f scripts/start-dev.mjs",
-  "preview": true,
-  "services": [
-    {
-      "name": "web",
-      "role": "frontend",
-      "cwd": "frontend",
-      "port": 5173,
-      "startCommand": "npx vite --port 5173 --host 0.0.0.0 --strictPort",
-      "preview": true
-    },
-    {
-      "name": "api",
-      "role": "backend",
-      "cwd": "backend",
-      "port": 8000,
-      "startCommand": ".venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --reload",
-      "healthCheck": { "type": "http", "path": "/api/health" }
-    }
-  ],
-  "checkCommand": "npm run check"
+  "runtime": "npm",
+  "port": 8080,
+  "applicationStart": "cd /root/code_deploy_application && npm install && { nohup node scripts/start-dev.mjs --port 8080 >> /root/application.log 2>&1 & APP_PID=$!; echo $APP_PID > /root/application.pid; sleep 2; kill -0 $APP_PID; }",
+  "applicationStop": "if [ -f /root/application.pid ]; then kill $(cat /root/application.pid) 2>/dev/null || true; rm -f /root/application.pid; fi"
 }
