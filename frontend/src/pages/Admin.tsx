@@ -124,7 +124,7 @@ function ConfigPanel() {
           {fields.map((f) => (
             <div key={f.key} className={f.span === 2 ? 'sm:col-span-2' : ''}>
               <label className="block text-sm font-medium text-slate-700">{f.label}</label>
-              <input type={f.type === 'number' ? 'number' : 'text'} step={f.step as string | undefined} className={input} value={form[f.key as FK]} onChange={(e) => up(f.key as FK, e.target.value)} />
+              <input type={(f as any).type=== 'number' ? 'number' : 'text'} step={(f as any).step as string | undefined} className={input} value={form[f.key as FK]} onChange={(e) => up(f.key as FK, e.target.value)} />
             </div>
           ))}
         </div>
@@ -278,7 +278,7 @@ function WeatherLogsPanel() {
     q.set('page', String(p)); q.set('page_size', '20')
     if (s) q.set('start_date', s); if (e) q.set('end_date', e)
     apiFetch<WeatherLogsResponse>(`/api/admin/weather-logs?${q}`)
-      .then((d) => { setLogs(d.items); setTotal(d.total); setTotalPages(d.total_pages); setPage(d.page); setStatus('ready') })
+      .then((d) => { setLogs(d.items ?? []); setTotal(d.total); setTotalPages(d.total_pages); setPage(d.page); setStatus('ready') })
       .catch(() => setStatus('error'))
   }, [])
 
