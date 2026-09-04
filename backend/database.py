@@ -191,12 +191,72 @@ async def db_log_weather(city: str, weather: dict) -> None:
         await db.close()
 
 
-async def db_get_weather_logs(limit: int = 50) -> list[dict]:
+async def db_get_weather_logs(
+    limit: int = 20,
+    offset: int = 0,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> list[dict]:
     db = await get_db()
     try:
+        conditions = []
+        params: list = []
+
+        if start_date:
+            conditions.append("queried_at >= ?")
+            params.append(start_date)
+        if end_date:
+            conditions.append("queried_at <= ?")
+            params.append(end_date)
+
+        where_clause = ""
+        if conditions:
+            where_clause = "WHERE " + " AND ".join(conditions)
+
+        params.extend([limit, offset])
         cur = await db.execute(
-            "SELECT * FROM weather_log ORDER BY queried_at DESC LIMIT ?", (limit,)
+            f"SELECT * FROM weather_log {where_clause} ORDER BY queried_at DESC LIMIT ? OFFSET ?",
+            tuple(params),
         )
         return [dict(row) for row in await cur.fetchall()]
+    finally:
+        await db.close()
+
+
+async def db_get_weather_logs_count(
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> int:
+    db = await get_db()
+    try:
+        conditions = []
+        params: list = []
+
+        if start_date:
+            conditions.append("queried_at >= ?")
+            params.append(start_date)
+        if end_date:
+            conditions.append("queried_at <= ?")
+            params.append(end_date)
+
+        where_clause = ""
+        if conditions:
+            where_clause = "WHERE " + " AND ".join(conditions)
+
+        cur = await db.execute(
+            f"SELECT COUNT(*) FROM weather_log {where_clause}", tuple(params)
+        )
+        row = await cur.fetchone()
+        return row[0] if row else 0
+    finally:
+        await db.close()
+
+
+async def db_delete_weather_log(log_id: int) -> bool:
+    db = await get_db()
+    try:
+        cur = await db.execute("DELETE FROM weather_log WHERE id = ?", (log_id,))
+        await db.commit()
+        return cur.rowcount > 0
     finally:
         await db.close()

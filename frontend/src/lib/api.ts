@@ -107,3 +107,11 @@ export interface WeatherLog {
   source: string
   queried_at: string
 }
+
+export interface WeatherLogsResponse {
+  items: WeatherLog[]
+  total: number
+  page: number
+  page_size: number
+  total_pages: number
+}

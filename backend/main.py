@@ -27,6 +27,8 @@ from database import (
     db_update_config,
     db_log_weather,
     db_get_weather_logs,
+    db_get_weather_logs_count,
+    db_delete_weather_log,
 )
 
 CST = timezone(timedelta(hours=8))
@@ -369,5 +371,42 @@ async def esp32_dashboard() -> dict:
 # ---------------------------------------------------------------------------
 
 @app.get("/api/admin/weather-logs")
-async def get_weather_logs(limit: int = 50, _: str = Depends(require_auth)) -> list[dict]:
-    return await db_get_weather_logs(limit)
+async def get_weather_logs(
+    page: int = 1,
+    page_size: int = 20,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    _: str = Depends(require_auth),
+) -> dict:
+    if page < 1:
+        page = 1
+    if page_size < 1 or page_size > 100:
+        page_size = 20
+    offset = (page - 1) * page_size
+
+    logs = await db_get_weather_logs(
+        limit=page_size,
+        offset=offset,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    total = await db_get_weather_logs_count(
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    return {
+        "items": logs,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": (total + page_size - 1) // page_size if total > 0 else 0,
+    }
+
+
+@app.delete("/api/admin/weather-logs/{log_id}")
+async def delete_weather_log(log_id: int, _: str = Depends(require_auth)) -> dict:
+    deleted = await db_delete_weather_log(log_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="日志记录不存在")
+    return {"status": "ok", "deleted": log_id}
